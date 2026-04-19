@@ -1,7 +1,8 @@
 /**
  * Core health/discovery/launch logic.
  */
-import { getClient, getTargetInfo, evaluate } from '../connection.js';
+import { getClient, getTargetInfo, evaluate, disconnect } from '../connection.js';
+import { waitForChartReady } from '../wait.js';
 import { existsSync } from 'fs';
 import { execSync, spawn } from 'child_process';
 
@@ -312,4 +313,114 @@ export async function launch({ port, kill_existing, _deps } = {}) {
     success: true, platform, binary: tvPath, pid: child?.pid ?? null, cdp_port: cdpPort, cdp_ready: false,
     warning: 'TradingView launched but CDP not responding yet. It may still be loading. Try tv_health_check in a few seconds.',
   };
+}
+
+export async function ensureCDP({ port } = {}) {
+  const cdpPort = port || 9222;
+  const http = await import('http');
+
+  const cdpAlive = await new Promise((resolve) => {
+    http.get(`http://localhost:${cdpPort}/json/version`, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => { try { resolve(JSON.parse(data)); } catch { resolve(null); } });
+    }).on('error', () => resolve(null));
+  });
+
+  if (cdpAlive) {
+    try {
+      const health = await healthCheck();
+      return {
+        success: true, action: 'none', message: 'CDP already available',
+        cdp_port: cdpPort, browser: cdpAlive.Browser,
+        chart_symbol: health.chart_symbol, chart_resolution: health.chart_resolution,
+        api_available: health.api_available,
+      };
+    } catch (err) {
+      return {
+        success: true, action: 'none', message: 'CDP responding but chart API not ready yet',
+        cdp_port: cdpPort, browser: cdpAlive.Browser, warning: err.message,
+      };
+    }
+  }
+
+  const platform = process.platform;
+  let tvRunning = false;
+  try {
+    if (platform === 'win32') {
+      execSync('tasklist /FI "IMAGENAME eq TradingView.exe" | findstr TradingView', { timeout: 3000 });
+    } else {
+      execSync('pgrep -f TradingView', { timeout: 3000 });
+    }
+    tvRunning = true;
+  } catch { /* not running */ }
+
+  const result = await launch({ port: cdpPort, kill_existing: tvRunning });
+  return {
+    ...result,
+    action: tvRunning ? 'restarted' : 'launched',
+    message: tvRunning
+      ? 'TradingView was running without CDP — killed and relaunched with debug port'
+      : 'TradingView was not running — launched with debug port',
+  };
+}
+
+export async function reconnect() {
+  let c;
+  try {
+    c = await getClient();
+  } catch (err) {
+    return {
+      success: false,
+      error: `CDP connection failed: ${err.message}`,
+      hint: 'TradingView Desktop may not be running. Use tv_launch to start it.',
+    };
+  }
+
+  let priorSymbol = 'unknown', priorResolution = 'unknown';
+  try {
+    const state = await evaluate(`
+      (function() {
+        try {
+          var chart = window.TradingViewApi._activeChartWidgetWV.value();
+          return { symbol: chart.symbol(), resolution: chart.resolution() };
+        } catch(e) { return { symbol: 'unknown', resolution: 'unknown' }; }
+      })()
+    `);
+    priorSymbol = state?.symbol || 'unknown';
+    priorResolution = state?.resolution || 'unknown';
+  } catch { /* best effort */ }
+
+  try { await c.Page.reload({ ignoreCache: true }); } catch { /* may drop CDP; expected */ }
+
+  await disconnect();
+  await new Promise(r => setTimeout(r, 3000));
+
+  try {
+    await getClient();
+  } catch (err) {
+    return {
+      success: false,
+      error: `CDP reconnect after reload failed: ${err.message}`,
+      hint: 'TradingView may still be loading. Try tv_health_check in a few seconds.',
+    };
+  }
+
+  const chartReady = await waitForChartReady(null, null, 20000);
+
+  try {
+    const health = await healthCheck();
+    return {
+      success: true, reconnected: true, chart_ready: chartReady,
+      prior_symbol: priorSymbol, prior_resolution: priorResolution,
+      current_symbol: health.chart_symbol, current_resolution: health.chart_resolution,
+      api_available: health.api_available,
+    };
+  } catch (err) {
+    return {
+      success: true, reconnected: true, chart_ready: chartReady,
+      prior_symbol: priorSymbol,
+      warning: `Page reloaded but health check failed: ${err.message}. Chart may still be loading.`,
+    };
+  }
 }

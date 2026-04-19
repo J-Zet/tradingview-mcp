@@ -133,35 +133,101 @@ export async function getIndicator({ entity_id }) {
 }
 
 export async function getStrategyResults() {
-  const results = await evaluate(`
+  // Phase 1: find strategy and inspect its state
+  const inspection = await evaluate(`
     (function() {
       try {
         var chart = ${CHART_API}._chartWidget;
         var sources = chart.model().model().dataSources();
         var strat = null;
+        // Pass 1: ordersData is the definitive strategy marker
         for (var i = 0; i < sources.length; i++) {
-          var s = sources[i];
-          if (s.metaInfo && s.metaInfo().is_price_study === false && (s.reportData || s.performance)) { strat = s; break; }
+          if (sources[i].ordersData) { strat = sources[i]; break; }
         }
-        if (!strat) return {metrics: {}, source: 'internal_api', error: 'No strategy found on chart. Add a strategy indicator first.'};
-        var metrics = {};
-        if (strat.reportData) {
-          var rd = typeof strat.reportData === 'function' ? strat.reportData() : strat.reportData;
-          if (rd && typeof rd === 'object') {
-            if (typeof rd.value === 'function') rd = rd.value();
-            if (rd) { var keys = Object.keys(rd); for (var k = 0; k < keys.length; k++) { var val = rd[keys[k]]; if (val !== null && val !== undefined && typeof val !== 'function') metrics[keys[k]] = val; } }
+        // Pass 2: check metaInfo for scriptType or is_price_study
+        if (!strat) {
+          var skip = ['volume','dividends','splits','earnings','dates calculator'];
+          for (var i = 0; i < sources.length; i++) {
+            var s = sources[i];
+            try {
+              if (!s.metaInfo) continue;
+              var mi = s.metaInfo();
+              var desc = (mi.description || mi.shortDescription || '').toLowerCase();
+              var isBuiltIn = false;
+              for (var sk = 0; sk < skip.length; sk++) { if (desc.indexOf(skip[sk]) !== -1) { isBuiltIn = true; break; } }
+              if (isBuiltIn) continue;
+              if (mi.pine && mi.pine.scriptType === 'strategy') { strat = s; break; }
+              if (mi.scriptType === 'strategy') { strat = s; break; }
+              if (mi.is_price_study === false && s.reportData) { strat = s; break; }
+            } catch(e) {}
           }
         }
-        if (Object.keys(metrics).length === 0 && strat.performance) {
-          var perf = strat.performance();
-          if (perf && typeof perf.value === 'function') perf = perf.value();
-          if (perf && typeof perf === 'object') { var pkeys = Object.keys(perf); for (var p = 0; p < pkeys.length; p++) { var pval = perf[pkeys[p]]; if (pval !== null && pval !== undefined && typeof pval !== 'function') metrics[pkeys[p]] = pval; } }
-        }
-        return {metrics: metrics, source: 'internal_api'};
-      } catch(e) { return {metrics: {}, source: 'internal_api', error: e.message}; }
+        if (!strat) return { found: false, error: 'No strategy found on chart. Add a strategy indicator first.' };
+        var state = { completed: false, failed: false, loading: false };
+        try { state.completed = strat.isCompleted(); } catch(e) {}
+        try { state.failed = strat.isFailed(); } catch(e) {}
+        try { state.loading = strat.isLoading(); } catch(e) {}
+        return { found: true, state: state };
+      } catch(e) { return { found: false, error: e.message }; }
     })()
   `);
-  return { success: true, metric_count: Object.keys(results?.metrics || {}).length, source: results?.source, metrics: results?.metrics || {}, error: results?.error };
+
+  if (!inspection?.found) {
+    return { success: true, metric_count: 0, source: 'internal_api', metrics: {}, error: inspection?.error || 'No strategy found on chart.' };
+  }
+  const state = inspection.state || {};
+  if (state.failed) return { success: true, metric_count: 0, source: 'internal_api', metrics: {}, error: 'Strategy is in failed state. Recompile the strategy.', state };
+  if (state.loading) return { success: true, metric_count: 0, source: 'internal_api', metrics: {}, error: 'Strategy is still loading/computing. Wait and retry.', state };
+
+  // Phase 2: extract metrics via reportData().performance — authoritative source
+  const data = await evaluate(`
+    (function() {
+      try {
+        var chart = ${CHART_API}._chartWidget;
+        var sources = chart.model().model().dataSources();
+        var strat = null;
+        for (var i = 0; i < sources.length; i++) { if (sources[i].ordersData) { strat = sources[i]; break; } }
+        if (!strat) { for (var i = 0; i < sources.length; i++) { if (sources[i].metaInfo && sources[i].reportData) { strat = sources[i]; break; } } }
+        if (!strat || typeof strat.reportData !== 'function') return null;
+        var rd = strat.reportData();
+        if (!rd || !rd.performance) return null;
+        var perf = rd.performance;
+        var out = {};
+        var topKeys = ['maxStrategyDrawDown','maxStrategyDrawDownPercent','maxStrategyRunUp','maxStrategyRunUpPercent','sharpeRatio','sortinoRatio','openPL','openPLPercent','buyHoldReturn','buyHoldReturnPercent'];
+        for (var t = 0; t < topKeys.length; t++) { if (perf[topKeys[t]] !== undefined) out[topKeys[t]] = perf[topKeys[t]]; }
+        if (perf.all && typeof perf.all === 'object') {
+          var ak = Object.keys(perf.all);
+          for (var a = 0; a < ak.length; a++) { var v = perf.all[ak[a]]; if (v !== null && v !== undefined && typeof v !== 'function' && typeof v !== 'object') out[ak[a]] = v; }
+        }
+        out._currency = rd.currency || '';
+        out._tradeCount = rd.trades ? (Array.isArray(rd.trades) ? rd.trades.length : 0) : 0;
+        try { var mi = strat.metaInfo(); out.strategyName = mi.description || mi.shortDescription || ''; } catch(e) {}
+        return out;
+      } catch(e) { return { _error: e.message }; }
+    })()
+  `);
+
+  if (data && !data._error && Object.keys(data).length > 0) {
+    const metrics = data;
+    return { success: true, metric_count: Object.keys(metrics).length, source: 'internal_api', metrics, state };
+  }
+
+  // Phase 3: fallback to legacy approach
+  const legacy = await evaluate(`
+    (function() {
+      try {
+        var chart = ${CHART_API}._chartWidget;
+        var sources = chart.model().model().dataSources();
+        var strat = null;
+        for (var i = 0; i < sources.length; i++) { var s = sources[i]; if (s.metaInfo && s.metaInfo().is_price_study === false && (s.reportData || s.performance)) { strat = s; break; } }
+        if (!strat) return {metrics: {}, error: 'No strategy found'};
+        var metrics = {};
+        if (strat.performance) { var perf = strat.performance(); if (perf && typeof perf.value === 'function') perf = perf.value(); if (perf && typeof perf === 'object') { var pkeys = Object.keys(perf); for (var p = 0; p < pkeys.length; p++) { var pval = perf[pkeys[p]]; if (pval !== null && pval !== undefined && typeof pval !== 'function') metrics[pkeys[p]] = pval; } } }
+        return {metrics: metrics};
+      } catch(e) { return {metrics: {}, error: e.message}; }
+    })()
+  `);
+  return { success: true, metric_count: Object.keys(legacy?.metrics || {}).length, source: 'internal_api_legacy', metrics: legacy?.metrics || {}, error: legacy?.error, state };
 }
 
 // DOM-based strategy tester scraper — more stable than internal React API approach.

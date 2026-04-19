@@ -11,6 +11,14 @@ export function registerIndicatorTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
+  server.tool('indicator_set_dom_input', 'Set a value in a React-controlled input field (e.g. indicator settings dialog) using the native DOM setter — bypasses React synthetic event system to ensure state updates correctly', {
+    selector: z.string().describe('CSS selector for the input element, e.g. "input[data-name=\'length\']"'),
+    value: z.string().describe('Value to set'),
+  }, async ({ selector, value }) => {
+    try { return jsonResult(await core.setDomInput({ selector, value })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
   server.tool('indicator_toggle_visibility', 'Show or hide an indicator/study on the chart', {
     entity_id: z.string().describe('Entity ID of the study (from chart_get_state)'),
     visible: z.coerce.boolean().describe('true to show, false to hide'),

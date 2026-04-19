@@ -18,8 +18,13 @@ export function registerDataTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('data_get_strategy_results', 'Get strategy performance metrics from Strategy Tester', {}, async () => {
+  server.tool('data_get_strategy_results', 'Get strategy performance metrics from Strategy Tester (internal React API)', {}, async () => {
     try { return jsonResult(await core.getStrategyResults()); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('data_get_strategy_results_dom', 'Get strategy performance metrics by scraping the Strategy Tester DOM — more stable than the internal API approach. Requires the Strategy Tester panel to be visible.', {}, async () => {
+    try { return jsonResult(await core.getStrategyResultsDom()); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 

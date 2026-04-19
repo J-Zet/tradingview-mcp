@@ -61,6 +61,21 @@ export async function getClient() {
   return connect();
 }
 
+export async function connectToTarget(targetId) {
+  client = null;
+  targetInfo = null;
+  const resp = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/list`);
+  const targets = await resp.json();
+  const target = targets.find(t => t.id === targetId);
+  if (!target) throw new Error(`Target ${targetId} not found`);
+  targetInfo = target;
+  client = await CDP({ host: CDP_HOST, port: CDP_PORT, target: targetId });
+  await client.Runtime.enable();
+  await client.Page.enable();
+  await client.DOM.enable();
+  return client;
+}
+
 export async function connect() {
   let lastError;
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {

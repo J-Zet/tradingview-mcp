@@ -164,6 +164,55 @@ export async function getStrategyResults() {
   return { success: true, metric_count: Object.keys(results?.metrics || {}).length, source: results?.source, metrics: results?.metrics || {}, error: results?.error };
 }
 
+// DOM-based strategy tester scraper — more stable than internal React API approach.
+// Reads the Strategy Tester panel text directly and extracts key metrics via regex.
+export async function getStrategyResultsDom() {
+  const raw = await evaluate(`
+    (function() {
+      var panel = document.querySelector('[class*="backtesting-content"]')
+        || document.querySelector('[class*="report-data"]')
+        || document.querySelector('[class*="strategyReport"]');
+      if (!panel) return null;
+      return panel.innerText;
+    })()
+  `);
+
+  if (!raw) {
+    return { success: false, error: 'Strategy Tester panel not visible. Open it with ui_open_panel first.', metrics: {} };
+  }
+
+  const extract = (pattern, text) => {
+    const m = text.match(pattern);
+    return m ? m[1].trim() : null;
+  };
+
+  const parseNum = s => s ? parseFloat(s.replace(/[,%$\s]/g, '')) : null;
+
+  const metrics = {
+    net_profit:      extract(/Net Profit\s+([^\n]+)/i, raw),
+    net_profit_pct:  extract(/Net Profit\s+[^\n]+\n\s*([0-9.,\-%]+)/i, raw),
+    gross_profit:    extract(/Gross Profit\s+([^\n]+)/i, raw),
+    gross_loss:      extract(/Gross Loss\s+([^\n]+)/i, raw),
+    max_drawdown:    extract(/Max(?:imum)?\s+(?:Equity\s+)?Drawdown\s+([^\n]+)/i, raw),
+    profit_factor:   extract(/Profit Factor\s+([0-9.,]+)/i, raw),
+    win_rate:        extract(/Percent Profitable\s+([0-9.,]+%)/i, raw),
+    total_trades:    extract(/Total(?:\s+Closed)?\s+Trades\s+([0-9,]+)/i, raw),
+    avg_trade:       extract(/Avg(?:\. ?|\s+)(?:Winning\s+)?Trade\s+([^\n]+)/i, raw),
+    sharpe_ratio:    extract(/Sharpe Ratio\s+([0-9.,\-]+)/i, raw),
+  };
+
+  return {
+    success: true,
+    source: 'dom_scrape',
+    metrics,
+    net_profit_num: parseNum(metrics.net_profit),
+    profit_factor_num: parseNum(metrics.profit_factor),
+    win_rate_num: parseNum(metrics.win_rate),
+    total_trades_num: parseNum(metrics.total_trades),
+    raw_snippet: raw.substring(0, 500),
+  };
+}
+
 export async function getTrades({ max_trades } = {}) {
   const limit = Math.min(max_trades || 20, MAX_TRADES);
   const trades = await evaluate(`

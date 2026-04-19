@@ -469,32 +469,54 @@ export async function smartCompile() {
     await c.Input.dispatchKeyEvent({ type: 'keyUp', key: 'Enter', code: 'Enter' });
   }
 
-  await new Promise(r => setTimeout(r, 2500));
+  // Wait for compilation to finish: poll Monaco markers + study count stability
+  // instead of a fixed delay. Polls every 300ms, up to 10s total.
+  let errors = [];
+  let studiesAfterPoll = null;
+  const POLL_INTERVAL = 300;
+  const MAX_WAIT = 10000;
+  const started = Date.now();
+  let stableCount = 0;
+  let prevMarkerHash = null;
 
-  const errors = await evaluate(`
-    (function() {
-      var m = ${FIND_MONACO};
-      if (!m) return [];
-      var model = m.editor.getModel();
-      if (!model) return [];
-      var markers = m.env.editor.getModelMarkers({ resource: model.uri });
-      return markers.map(function(mk) {
-        return { line: mk.startLineNumber, column: mk.startColumn, message: mk.message, severity: mk.severity };
-      });
-    })()
-  `);
+  while (Date.now() - started < MAX_WAIT) {
+    await new Promise(r => setTimeout(r, POLL_INTERVAL));
 
-  const studiesAfter = await evaluate(`
-    (function() {
-      try {
-        var chart = window.TradingViewApi._activeChartWidgetWV.value();
-        if (chart && typeof chart.getAllStudies === 'function') return chart.getAllStudies().length;
-      } catch(e) {}
-      return null;
-    })()
-  `);
+    const snapshot = await evaluate(`
+      (function() {
+        var m = ${FIND_MONACO};
+        if (!m) return null;
+        var model = m.editor.getModel();
+        if (!model) return null;
+        var markers = m.env.editor.getModelMarkers({ resource: model.uri });
+        var errs = markers.map(function(mk) {
+          return { line: mk.startLineNumber, column: mk.startColumn, message: mk.message, severity: mk.severity };
+        });
+        var studyCount = null;
+        try {
+          var chart = window.TradingViewApi._activeChartWidgetWV.value();
+          if (chart && typeof chart.getAllStudies === 'function') studyCount = chart.getAllStudies().length;
+        } catch(e) {}
+        return { errors: errs, studyCount: studyCount };
+      })()
+    `);
 
-  const studyAdded = (studiesBefore !== null && studiesAfter !== null) ? studiesAfter > studiesBefore : null;
+    if (!snapshot) continue;
+
+    const hash = JSON.stringify(snapshot.errors) + ':' + snapshot.studyCount;
+    studiesAfterPoll = snapshot.studyCount;
+
+    if (hash === prevMarkerHash) {
+      stableCount++;
+      if (stableCount >= 2) { errors = snapshot.errors; break; }
+    } else {
+      stableCount = 0;
+      prevMarkerHash = hash;
+    }
+    errors = snapshot.errors;
+  }
+
+  const studyAdded = (studiesBefore !== null && studiesAfterPoll !== null) ? studiesAfterPoll > studiesBefore : null;
 
   return {
     success: true,

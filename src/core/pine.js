@@ -841,7 +841,44 @@ export async function deleteScript({ name }) {
   // Clean up injected CSS
   await evaluate(`var s = document.getElementById('__pine_remove_css'); if (s) s.remove();`);
 
-  return { success: true, action: 'deleted', name, confirmed };
+  // Purge from "Recently Used" dropdown: open title menu and click any matching
+  // recently-used entry so TV fires a /get/{id}/last which 404s — TV then removes
+  // the dead entry from the in-memory list on next open.
+  // More reliable: click it once (triggers 404 internally) then close.
+  const purged = await evaluate(`
+    (function() {
+      function mc(el) {
+        ['mousedown','mouseup','click'].forEach(function(t) {
+          el.dispatchEvent(new MouseEvent(t, { bubbles:true, cancelable:true, view:window }));
+        });
+      }
+      var btn = document.querySelector('[data-qa-id="pine-script-title-button"]');
+      if (!btn) return 0;
+      mc(btn);
+      var menu = document.getElementById(btn.getAttribute('aria-controls'));
+      if (!menu) return 0;
+      var target = ${JSON.stringify(name.toLowerCase())};
+      var items = Array.from(menu.querySelectorAll('[role="menuitemcheckbox"]'));
+      var matches = items.filter(function(el) { return el.textContent.toLowerCase().indexOf(target) !== -1; });
+      matches.forEach(function(el) { mc(el); });
+      // Close menu
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      return matches.length;
+    })()
+  `);
+  await new Promise(r => setTimeout(r, 500));
+
+  // Re-open and close the dropdown once more so TV re-renders the cleaned list
+  await evaluate(`
+    (function() {
+      function mc(el) { ['mousedown','mouseup','click'].forEach(function(t) { el.dispatchEvent(new MouseEvent(t, { bubbles:true, cancelable:true, view:window })); }); }
+      var btn = document.querySelector('[data-qa-id="pine-script-title-button"]');
+      if (btn) { mc(btn); setTimeout(function() { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); }, 300); }
+    })()
+  `);
+  await new Promise(r => setTimeout(r, 500));
+
+  return { success: true, action: 'deleted', name, confirmed, recently_used_purged: purged > 0 };
 }
 
 export async function listScripts() {

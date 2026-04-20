@@ -73,6 +73,13 @@ export function registerPineTools(server) {
     catch (err) { return jsonResult({ success: false, source: 'internal_api', error: err.message }, true); }
   });
 
+  server.tool('pine_delete', 'Delete a saved Pine Script via the Open script dialog. Permanently removes the script from TradingView cloud.', {
+    name: z.string().describe('Name of the script to delete (case-insensitive substring match)'),
+  }, async ({ name }) => {
+    try { return jsonResult(await core.deleteScript({ name })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
   server.tool('pine_list_scripts', 'List saved Pine Scripts', {}, async () => {
     try { return jsonResult(await core.listScripts()); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }

@@ -759,6 +759,91 @@ export async function openScript({ name }) {
   return { success: true, name: result.name, script_id: result.id, lines: result.lines, source: 'internal_api', opened: true };
 }
 
+export async function deleteScript({ name }) {
+  const editorReady = await ensurePineEditorOpen();
+  if (!editorReady) throw new Error('Could not open Pine Editor.');
+
+  // Open the "Open script…" dialog
+  await _pineMenuAction('Open script…');
+  await new Promise(r => setTimeout(r, 500));
+
+  // Inject CSS so remove buttons are always visible (they're hover-only by default)
+  await evaluate(`
+    (function() {
+      if (document.getElementById('__pine_remove_css')) return;
+      var s = document.createElement('style');
+      s.id = '__pine_remove_css';
+      s.textContent = '.removeButton-gisYB8vu { opacity: 1 !important; visibility: visible !important; pointer-events: all !important; }';
+      document.head.appendChild(s);
+    })()
+  `);
+
+  // Find the row matching the name and click its remove button
+  const result = await evaluate(`
+    (function() {
+      function mc(el) {
+        ['mousedown','mouseup','click'].forEach(function(t) {
+          el.dispatchEvent(new MouseEvent(t, { bubbles:true, cancelable:true, view:window }));
+        });
+      }
+      var dialog = document.querySelector('[role="dialog"]');
+      if (!dialog) return { error: 'Open script dialog not found' };
+
+      var target = ${JSON.stringify(name.toLowerCase())};
+      var rows = Array.from(dialog.querySelectorAll('[class*="itemRow"]'));
+      var matchedRow = null;
+      for (var i = 0; i < rows.length; i++) {
+        var txt = rows[i].textContent.toLowerCase();
+        if (txt.indexOf(target) !== -1) { matchedRow = rows[i]; break; }
+      }
+      if (!matchedRow) return { error: 'Script not found in list: ' + ${JSON.stringify(name)}, available: rows.map(function(r) { return r.textContent.trim().slice(0,40); }) };
+
+      var removeBtn = matchedRow.querySelector('.removeButton-gisYB8vu, [aria-label="Remove"]');
+      if (!removeBtn) return { error: 'Remove button not found on row' };
+
+      mc(removeBtn);
+      return { clicked: true, scriptName: matchedRow.textContent.trim().slice(0,60) };
+    })()
+  `);
+
+  if (result?.error) {
+    await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+    throw new Error(result.error);
+  }
+
+  await new Promise(r => setTimeout(r, 400));
+
+  // Handle possible confirmation dialog
+  const confirmed = await evaluate(`
+    (function() {
+      function mc(el) {
+        ['mousedown','mouseup','click'].forEach(function(t) {
+          el.dispatchEvent(new MouseEvent(t, { bubbles:true, cancelable:true, view:window }));
+        });
+      }
+      var btns = Array.from(document.querySelectorAll('button'));
+      var confirmBtn = btns.find(function(b) {
+        var t = b.textContent.trim();
+        var p = b.closest('[role="dialog"], [class*="dialog"], [class*="modal"]');
+        return p && (t === 'Delete' || t === 'Remove' || t === 'OK' || t === 'Yes') && b.offsetParent !== null;
+      });
+      if (confirmBtn) { mc(confirmBtn); return true; }
+      return false;
+    })()
+  `);
+
+  if (confirmed) await new Promise(r => setTimeout(r, 400));
+
+  // Close dialog
+  await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
+  await new Promise(r => setTimeout(r, 300));
+
+  // Clean up injected CSS
+  await evaluate(`var s = document.getElementById('__pine_remove_css'); if (s) s.remove();`);
+
+  return { success: true, action: 'deleted', name, confirmed };
+}
+
 export async function listScripts() {
   const scripts = await evaluateAsync(`
     fetch('https://pine-facade.tradingview.com/pine-facade/list/?filter=saved', { credentials: 'include' })

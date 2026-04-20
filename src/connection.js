@@ -62,18 +62,23 @@ export async function getClient() {
 }
 
 export async function connectToTarget(targetId) {
-  client = null;
-  targetInfo = null;
-  const resp = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/list`);
-  const targets = await resp.json();
-  const target = targets.find(t => t.id === targetId);
-  if (!target) throw new Error(`Target ${targetId} not found`);
-  targetInfo = target;
-  client = await CDP({ host: CDP_HOST, port: CDP_PORT, target: targetId });
-  await client.Runtime.enable();
-  await client.Page.enable();
-  await client.DOM.enable();
-  return client;
+  await disconnect();
+  let lastError;
+  for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+    try {
+      client = await CDP({ host: CDP_HOST, port: CDP_PORT, target: targetId });
+      await client.Runtime.enable();
+      await client.Page.enable();
+      await client.DOM.enable();
+      targetInfo = { id: targetId };
+      return client;
+    } catch (err) {
+      lastError = err;
+      const delay = Math.min(BASE_DELAY * Math.pow(2, attempt), 30000);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+  throw new Error(`CDP connect to target ${targetId} failed after ${MAX_RETRIES} attempts: ${lastError?.message}`);
 }
 
 export async function connect() {

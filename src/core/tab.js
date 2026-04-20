@@ -99,12 +99,13 @@ export async function switchTab({ index }) {
   const target = tabs.tabs[idx];
 
   try {
-    // Use CDP Target.activateTarget to visually bring the tab to front in Electron
-    // (fetch /json/activate doesn't work reliably in Electron for visual switching)
-    const currentClient = await getClient();
-    await currentClient.Target.activateTarget({ targetId: target.id });
-    await new Promise(r => setTimeout(r, 500));
+    // Connect to the new target first, then call Page.bringToFront through its own session.
+    // Target.activateTarget and /json/activate don't visually switch tabs in Electron —
+    // only Page.bringToFront sent via the target's own CDP session does.
     await connectToTarget(target.id);
+    const newClient = await getClient();
+    await newClient.Page.bringToFront();
+    await new Promise(r => setTimeout(r, 300));
 
     // Report current chart state so the caller always knows which chart is active
     let chartState = null;

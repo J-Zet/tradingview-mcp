@@ -285,30 +285,27 @@ export async function compile() {
   const editorReady = await ensurePineEditorOpen();
   if (!editorReady) throw new Error('Could not open Pine Editor.');
 
+  // Only click "Add to chart" or "Update on chart" — never the Save button.
+  // Clicking Save overwrites the last named script regardless of what's open.
   const clicked = await evaluate(`
     (function() {
       var btns = document.querySelectorAll('button');
-      var fallback = null;
-      var saveBtn = null;
       for (var i = 0; i < btns.length; i++) {
         var text = btns[i].textContent.trim();
         if (/save and add to chart/i.test(text)) {
           btns[i].click();
           return 'Save and add to chart';
         }
-        if (!fallback && /^(Add to chart|Update on chart)/i.test(text)) {
-          fallback = btns[i];
-        }
-        if (!saveBtn && btns[i].className.indexOf('saveButton') !== -1 && btns[i].offsetParent !== null) {
-          saveBtn = btns[i];
+        if (/^(Add to chart|Update on chart)$/i.test(text) && btns[i].offsetParent !== null) {
+          btns[i].click();
+          return text;
         }
       }
-      if (fallback) { fallback.click(); return fallback.textContent.trim(); }
-      if (saveBtn) { saveBtn.click(); return 'Pine Save'; }
       return null;
     })()
   `);
 
+  // Fallback: Ctrl+Enter compiles and adds to chart without triggering Save
   if (!clicked) {
     const c = await getClient();
     await c.Input.dispatchKeyEvent({ type: 'keyDown', modifiers: 2, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13 });
@@ -316,7 +313,7 @@ export async function compile() {
   }
 
   await new Promise(r => setTimeout(r, 2000));
-  return { success: true, button_clicked: clicked || 'keyboard_shortcut', source: 'dom_fallback' };
+  return { success: true, button_clicked: clicked || 'Ctrl+Enter', source: 'dom_fallback' };
 }
 
 export async function getErrors() {
@@ -440,25 +437,23 @@ export async function smartCompile() {
     })()
   `);
 
+  // Only click "Add to chart" or "Update on chart" — never the Save button.
   const buttonClicked = await evaluate(`
     (function() {
       var btns = document.querySelectorAll('button');
       var addBtn = null;
       var updateBtn = null;
-      var saveBtn = null;
       for (var i = 0; i < btns.length; i++) {
         var text = btns[i].textContent.trim();
         if (/save and add to chart/i.test(text)) {
           btns[i].click();
           return 'Save and add to chart';
         }
-        if (!addBtn && /^add to chart$/i.test(text)) addBtn = btns[i];
-        if (!updateBtn && /^update on chart$/i.test(text)) updateBtn = btns[i];
-        if (!saveBtn && btns[i].className.indexOf('saveButton') !== -1 && btns[i].offsetParent !== null) saveBtn = btns[i];
+        if (!addBtn && /^add to chart$/i.test(text) && btns[i].offsetParent !== null) addBtn = btns[i];
+        if (!updateBtn && /^update on chart$/i.test(text) && btns[i].offsetParent !== null) updateBtn = btns[i];
       }
       if (addBtn) { addBtn.click(); return 'Add to chart'; }
       if (updateBtn) { updateBtn.click(); return 'Update on chart'; }
-      if (saveBtn) { saveBtn.click(); return 'Pine Save'; }
       return null;
     })()
   `);
@@ -670,7 +665,15 @@ export async function saveAs({ name }) {
   if (result?.status >= 400) throw new Error('pine-facade save/new failed: ' + JSON.stringify(result.data));
 
   const d = result?.data || {};
-  return { success: true, action: 'save_as', name: copyName, script_id: d.scriptIdPart || d.id || d.script_id || null };
+  const scriptId = d.scriptIdPart || d.id || d.script_id || null;
+
+  // Open the newly saved script so the editor reflects it (prevents accidental overwrites of
+  // the previously open script on subsequent pine_save calls)
+  if (scriptId) {
+    try { await openScript({ name: copyName }); } catch (_) {}
+  }
+
+  return { success: true, action: 'save_as', name: copyName, script_id: scriptId };
 }
 
 export async function renameScript({ name }) {

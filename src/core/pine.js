@@ -760,125 +760,41 @@ export async function openScript({ name }) {
 }
 
 export async function deleteScript({ name }) {
-  const editorReady = await ensurePineEditorOpen();
-  if (!editorReady) throw new Error('Could not open Pine Editor.');
+  // Resolve name → script ID via pine-facade list
+  const list = await evaluateAsync(`
+    fetch('https://pine-facade.tradingview.com/pine-facade/list/?filter=saved', { credentials: 'include' })
+      .then(function(r) { return r.json(); })
+      .catch(function(e) { return { error: e.message }; })
+  `);
+  if (list?.error) throw new Error('Could not fetch script list: ' + list.error);
+  if (!Array.isArray(list)) throw new Error('Unexpected pine-facade response');
 
-  // Open the "Open script…" dialog
-  await _pineMenuAction('Open script…');
-  await new Promise(r => setTimeout(r, 500));
+  const target = name.toLowerCase();
+  let match = list.find(s => (s.scriptName || '').toLowerCase() === target || (s.scriptTitle || '').toLowerCase() === target);
+  if (!match) match = list.find(s => (s.scriptName || '').toLowerCase().includes(target) || (s.scriptTitle || '').toLowerCase().includes(target));
+  if (!match) throw new Error(`Script "${name}" not found. Use pine_list_scripts to see available scripts.`);
 
-  // Inject CSS so remove buttons are always visible (they're hover-only by default)
-  await evaluate(`
-    (function() {
-      if (document.getElementById('__pine_remove_css')) return;
-      var s = document.createElement('style');
-      s.id = '__pine_remove_css';
-      s.textContent = '.removeButton-gisYB8vu { opacity: 1 !important; visibility: visible !important; pointer-events: all !important; }';
-      document.head.appendChild(s);
-    })()
+  const id = match.scriptIdPart;
+  const scriptName = match.scriptName || match.scriptTitle;
+
+  // DELETE via pine-facade REST API
+  const result = await evaluateAsync(`
+    fetch('https://pine-facade.tradingview.com/pine-facade/delete/' + encodeURIComponent(${JSON.stringify(id)}), {
+      method: 'POST', credentials: 'include',
+    }).then(function(r) { return { status: r.status, ok: r.ok }; })
+      .catch(function(e) { return { error: e.message }; })
   `);
 
-  // Find the row matching the name and click its remove button
-  const result = await evaluate(`
-    (function() {
-      function mc(el) {
-        ['mousedown','mouseup','click'].forEach(function(t) {
-          el.dispatchEvent(new MouseEvent(t, { bubbles:true, cancelable:true, view:window }));
-        });
-      }
-      var dialog = document.querySelector('[role="dialog"]');
-      if (!dialog) return { error: 'Open script dialog not found' };
+  if (result?.error) throw new Error('pine-facade delete failed: ' + result.error);
+  if (!result?.ok) throw new Error('pine-facade delete returned status ' + result?.status);
 
-      var target = ${JSON.stringify(name.toLowerCase())};
-      var rows = Array.from(dialog.querySelectorAll('[class*="itemRow"]'));
-      var matchedRow = null;
-      for (var i = 0; i < rows.length; i++) {
-        var txt = rows[i].textContent.toLowerCase();
-        if (txt.indexOf(target) !== -1) { matchedRow = rows[i]; break; }
-      }
-      if (!matchedRow) return { error: 'Script not found in list: ' + ${JSON.stringify(name)}, available: rows.map(function(r) { return r.textContent.trim().slice(0,40); }) };
-
-      var removeBtn = matchedRow.querySelector('.removeButton-gisYB8vu, [aria-label="Remove"]');
-      if (!removeBtn) return { error: 'Remove button not found on row' };
-
-      mc(removeBtn);
-      return { clicked: true, scriptName: matchedRow.textContent.trim().slice(0,60) };
-    })()
-  `);
-
-  if (result?.error) {
-    await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
-    throw new Error(result.error);
-  }
-
-  await new Promise(r => setTimeout(r, 400));
-
-  // Handle possible confirmation dialog
-  const confirmed = await evaluate(`
-    (function() {
-      function mc(el) {
-        ['mousedown','mouseup','click'].forEach(function(t) {
-          el.dispatchEvent(new MouseEvent(t, { bubbles:true, cancelable:true, view:window }));
-        });
-      }
-      var btns = Array.from(document.querySelectorAll('button'));
-      var confirmBtn = btns.find(function(b) {
-        var t = b.textContent.trim();
-        var p = b.closest('[role="dialog"], [class*="dialog"], [class*="modal"]');
-        return p && (t === 'Delete' || t === 'Remove' || t === 'OK' || t === 'Yes') && b.offsetParent !== null;
-      });
-      if (confirmBtn) { mc(confirmBtn); return true; }
-      return false;
-    })()
-  `);
-
-  if (confirmed) await new Promise(r => setTimeout(r, 400));
-
-  // Close dialog
-  await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
-  await new Promise(r => setTimeout(r, 300));
-
-  // Clean up injected CSS
-  await evaluate(`var s = document.getElementById('__pine_remove_css'); if (s) s.remove();`);
-
-  // Purge from "Recently Used" dropdown: open title menu and click any matching
-  // recently-used entry so TV fires a /get/{id}/last which 404s — TV then removes
-  // the dead entry from the in-memory list on next open.
-  // More reliable: click it once (triggers 404 internally) then close.
-  const purged = await evaluate(`
-    (function() {
-      function mc(el) {
-        ['mousedown','mouseup','click'].forEach(function(t) {
-          el.dispatchEvent(new MouseEvent(t, { bubbles:true, cancelable:true, view:window }));
-        });
-      }
-      var btn = document.querySelector('[data-qa-id="pine-script-title-button"]');
-      if (!btn) return 0;
-      mc(btn);
-      var menu = document.getElementById(btn.getAttribute('aria-controls'));
-      if (!menu) return 0;
-      var target = ${JSON.stringify(name.toLowerCase())};
-      var items = Array.from(menu.querySelectorAll('[role="menuitemcheckbox"]'));
-      var matches = items.filter(function(el) { return el.textContent.toLowerCase().indexOf(target) !== -1; });
-      matches.forEach(function(el) { mc(el); });
-      // Close menu
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
-      return matches.length;
-    })()
-  `);
-  await new Promise(r => setTimeout(r, 500));
-
-  // Re-open and close the dropdown once more so TV re-renders the cleaned list
-  await evaluate(`
-    (function() {
-      function mc(el) { ['mousedown','mouseup','click'].forEach(function(t) { el.dispatchEvent(new MouseEvent(t, { bubbles:true, cancelable:true, view:window })); }); }
-      var btn = document.querySelector('[data-qa-id="pine-script-title-button"]');
-      if (btn) { mc(btn); setTimeout(function() { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); }, 300); }
-    })()
-  `);
-  await new Promise(r => setTimeout(r, 500));
-
-  return { success: true, action: 'deleted', name, confirmed, recently_used_purged: purged > 0 };
+  return {
+    success: true,
+    action: 'deleted',
+    name: scriptName,
+    script_id: id,
+    note: 'Script removed from TV cloud. Recently Used list clears on next TV session reload.',
+  };
 }
 
 export async function listScripts() {

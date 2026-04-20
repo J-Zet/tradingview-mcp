@@ -669,7 +669,8 @@ export async function saveAs({ name }) {
   if (result?.error) throw new Error(result.error);
   if (result?.status >= 400) throw new Error('pine-facade save/new failed: ' + JSON.stringify(result.data));
 
-  return { success: true, action: 'save_as', name: copyName, script_id: result?.data?.scriptIdPart || null };
+  const d = result?.data || {};
+  return { success: true, action: 'save_as', name: copyName, script_id: d.scriptIdPart || d.id || d.script_id || null };
 }
 
 export async function renameScript({ name }) {

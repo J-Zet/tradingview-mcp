@@ -668,10 +668,9 @@ export async function saveAs({ name }) {
   const scriptId = d.scriptIdPart || d.id || d.script_id || null;
 
   // Open the newly saved script so the editor reflects it (prevents accidental overwrites of
-  // the previously open script on subsequent pine_save calls)
-  if (scriptId) {
-    try { await openScript({ name: copyName }); } catch (_) {}
-  }
+  // the previously open script on subsequent pine_save calls).
+  // pine-facade save/new returns {}, so we always open by name.
+  try { await openScript({ name: copyName }); } catch (_) {}
 
   return { success: true, action: 'save_as', name: copyName, script_id: scriptId };
 }

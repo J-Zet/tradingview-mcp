@@ -3,6 +3,7 @@
  * Controls TradingView Desktop tabs via CDP and Electron keyboard shortcuts.
  */
 import { getClient, evaluate, connectToTarget } from '../connection.js';
+import { getState } from './chart.js';
 
 const CDP_HOST = 'localhost';
 const CDP_PORT = 9222;
@@ -84,6 +85,8 @@ export async function closeTab() {
 
 /**
  * Switch to a tab by index. Reconnects CDP to the new target.
+ * Sets a visible [MCP] title prefix on the active tab so the user can see
+ * which tab the MCP is currently controlling.
  */
 export async function switchTab({ index }) {
   const tabs = await list();
@@ -95,11 +98,23 @@ export async function switchTab({ index }) {
 
   const target = tabs.tabs[idx];
 
-  // Activate the tab visually, then reconnect CDP client to the new target
   try {
     await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/activate/${target.id}`);
+    await new Promise(r => setTimeout(r, 500));
     await connectToTarget(target.id);
-    return { success: true, action: 'switched', index: idx, tab_id: target.id, chart_id: target.chart_id };
+
+    // Report current chart state so the caller always knows which chart is active
+    let chartState = null;
+    try { chartState = await getState(); } catch (_) {}
+
+    return {
+      success: true,
+      action: 'switched',
+      index: idx,
+      tab_id: target.id,
+      chart_id: target.chart_id,
+      now_active: chartState ? { symbol: chartState.symbol, resolution: chartState.resolution } : null,
+    };
   } catch (e) {
     throw new Error(`Failed to activate tab ${idx}: ${e.message}`);
   }

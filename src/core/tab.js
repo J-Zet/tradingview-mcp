@@ -2,11 +2,23 @@
  * Core tab management logic.
  * Controls TradingView Desktop tabs via CDP and Electron keyboard shortcuts.
  */
+import CDP from 'chrome-remote-interface';
 import { getClient, evaluate, connectToTarget } from '../connection.js';
 import { getState } from './chart.js';
 
 const CDP_HOST = 'localhost';
 const CDP_PORT = 9222;
+
+/**
+ * Find the Electron title-bar renderer target (window/index.html).
+ * This is where the visual tab strip lives — clicking tabs here actually
+ * switches the visible chart, which CDP Page.captureScreenshot captures.
+ */
+async function _getWindowRendererTarget() {
+  const resp = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/list`);
+  const targets = await resp.json();
+  return targets.find(t => t.type === 'page' && t.url.includes('app/window/index.html'));
+}
 
 /**
  * List all open chart tabs (CDP page targets).
@@ -99,13 +111,27 @@ export async function switchTab({ index }) {
   const target = tabs.tabs[idx];
 
   try {
-    // Connect to the new target first, then call Page.bringToFront through its own session.
-    // Target.activateTarget and /json/activate don't visually switch tabs in Electron —
-    // only Page.bringToFront sent via the target's own CDP session does.
+    // Step 1: Click the tab in Electron's title-bar renderer (window/index.html).
+    // This is the ONLY reliable way to visually switch tabs — CDP Page.bringToFront
+    // and Target.activateTarget don't work in Electron's BrowserView-based tab model.
+    const windowTarget = await _getWindowRendererTarget();
+    if (windowTarget) {
+      const winClient = await CDP({ host: CDP_HOST, port: CDP_PORT, target: windowTarget.id });
+      await winClient.Runtime.enable();
+      await winClient.Runtime.evaluate({
+        expression: `(function() {
+          var tabs = Array.from(document.querySelectorAll('.tab'));
+          var t = tabs[${idx}];
+          if (t) t.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+          return t ? true : false;
+        })()`,
+      });
+      await winClient.close();
+      await new Promise(r => setTimeout(r, 400));
+    }
+
+    // Step 2: Reconnect CDP client to the new chart target
     await connectToTarget(target.id);
-    const newClient = await getClient();
-    await newClient.Page.bringToFront();
-    await new Promise(r => setTimeout(r, 300));
 
     // Report current chart state so the caller always knows which chart is active
     let chartState = null;

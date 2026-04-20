@@ -527,33 +527,156 @@ export async function smartCompile() {
   };
 }
 
+// Click an item in the pine-script-title dropdown by its aria-label.
+// If the item has a submenu (aria-haspopup=menu), pass subLabel to click within it.
+async function _pineMenuAction(label, subLabel) {
+  const result = await evaluate(`
+    (function() {
+      function mc(el) {
+        ['mousedown','mouseup','click'].forEach(function(t) {
+          el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window }));
+        });
+      }
+      var titleBtn = document.querySelector('[data-qa-id="pine-script-title-button"]');
+      if (!titleBtn) return { error: 'title button not found' };
+      mc(titleBtn);
+      var menuId = titleBtn.getAttribute('aria-controls');
+      var menu = menuId && document.getElementById(menuId);
+      if (!menu) return { error: 'dropdown menu not found' };
+      var items = menu.querySelectorAll('[role="menuitem"]');
+      var target = Array.from(items).find(function(el) {
+        return el.getAttribute('aria-label') === ${JSON.stringify(label)} ||
+               (el.getAttribute('aria-haspopup') === 'menu' && !el.getAttribute('aria-label') && ${JSON.stringify(label)} === 'Create new');
+      });
+      if (!target) return { error: 'menu item not found: ' + ${JSON.stringify(label)} };
+      if (${subLabel ? 'true' : 'false'}) {
+        target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+        target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+        var subId = target.getAttribute('aria-controls');
+        var submenu = subId && document.getElementById(subId);
+        if (!submenu) return { error: 'submenu not found' };
+        var subItems = submenu.querySelectorAll('[role="menuitem"]');
+        var subTarget = Array.from(subItems).find(function(el) {
+          return (el.getAttribute('aria-label') || '').toLowerCase() === ${JSON.stringify((subLabel || '').toLowerCase())};
+        });
+        if (!subTarget) return { error: 'submenu item not found: ' + ${JSON.stringify(subLabel || '')} };
+        mc(subTarget);
+      } else {
+        mc(target);
+      }
+      return { ok: true };
+    })()
+  `);
+  if (result?.error) throw new Error(result.error);
+}
+
 export async function newScript({ type }) {
   const editorReady = await ensurePineEditorOpen();
   if (!editorReady) throw new Error('Could not open Pine Editor.');
 
-  const typeMap = { indicator: 'indicator', strategy: 'strategy', library: 'library' };
-  const templates = {
-    indicator: '//@version=6\nindicator("My script")\nplot(close)',
-    strategy: '//@version=6\nstrategy("My strategy", overlay=true)\n',
-    library: '//@version=6\n// @description TODO: add library description here\nlibrary("MyLibrary")\n',
-  };
+  const validTypes = { indicator: 'Indicator', strategy: 'Strategy', library: 'Library' };
+  const subLabel = validTypes[type] || 'Indicator';
 
-  const template = templates[type] || templates.indicator;
+  await _pineMenuAction('Create new', subLabel);
+  await new Promise(r => setTimeout(r, 800));
 
-  // Simply set the source to a new template — this is the most reliable approach
-  const escaped = JSON.stringify(template);
+  return { success: true, type: type || 'indicator', action: 'new_script_created' };
+}
+
+export async function saveAs({ name }) {
+  const editorReady = await ensurePineEditorOpen();
+  if (!editorReady) throw new Error('Could not open Pine Editor.');
+
+  await _pineMenuAction('Make a copy…');
+  await new Promise(r => setTimeout(r, 500));
+
+  if (name) {
+    const set = await evaluate(`
+      (function() {
+        var inputs = document.querySelectorAll('input[type="text"], input:not([type])');
+        for (var i = 0; i < inputs.length; i++) {
+          if (inputs[i].offsetParent !== null) {
+            var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+            nativeSet.call(inputs[i], ${JSON.stringify(name)});
+            inputs[i].dispatchEvent(new Event('input', { bubbles: true }));
+            return true;
+          }
+        }
+        return false;
+      })()
+    `);
+    if (set) {
+      await new Promise(r => setTimeout(r, 200));
+      const saved = await evaluate(`
+        (function() {
+          var btns = document.querySelectorAll('button');
+          for (var i = 0; i < btns.length; i++) {
+            var t = btns[i].textContent.trim();
+            var p = btns[i].closest('[role="dialog"], [class*="dialog"], [class*="modal"]');
+            if ((t === 'Save' || t === 'OK') && p && btns[i].offsetParent !== null) {
+              btns[i].click(); return true;
+            }
+          }
+          return false;
+        })()
+      `);
+      if (saved) await new Promise(r => setTimeout(r, 500));
+    }
+  }
+
+  return { success: true, action: 'save_as', name: name || null };
+}
+
+export async function renameScript({ name }) {
+  const editorReady = await ensurePineEditorOpen();
+  if (!editorReady) throw new Error('Could not open Pine Editor.');
+
+  await _pineMenuAction('Rename…');
+  await new Promise(r => setTimeout(r, 500));
+
   const set = await evaluate(`
     (function() {
-      var m = ${FIND_MONACO};
-      if (!m) return false;
-      m.editor.setValue(${escaped});
-      return true;
+      var inputs = document.querySelectorAll('input[type="text"], input:not([type])');
+      for (var i = 0; i < inputs.length; i++) {
+        if (inputs[i].offsetParent !== null) {
+          var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+          nativeSet.call(inputs[i], ${JSON.stringify(name)});
+          inputs[i].dispatchEvent(new Event('input', { bubbles: true }));
+          return true;
+        }
+      }
+      return false;
     })()
   `);
+  if (!set) throw new Error('Rename dialog input not found.');
 
-  if (!set) throw new Error('Monaco editor not found. Ensure Pine Editor is open.');
+  await new Promise(r => setTimeout(r, 200));
+  const saved = await evaluate(`
+    (function() {
+      var btns = document.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) {
+        var t = btns[i].textContent.trim();
+        var p = btns[i].closest('[role="dialog"], [class*="dialog"], [class*="modal"]');
+        if ((t === 'Save' || t === 'OK' || t === 'Rename') && p && btns[i].offsetParent !== null) {
+          btns[i].click(); return true;
+        }
+      }
+      return false;
+    })()
+  `);
+  if (saved) await new Promise(r => setTimeout(r, 500));
 
-  return { success: true, type, action: 'new_script_created', template: typeMap[type] };
+  return { success: true, action: 'renamed', name };
+}
+
+export async function versionHistory() {
+  const editorReady = await ensurePineEditorOpen();
+  if (!editorReady) throw new Error('Could not open Pine Editor.');
+
+  await _pineMenuAction('Version history…');
+  await new Promise(r => setTimeout(r, 500));
+
+  return { success: true, action: 'version_history_opened' };
 }
 
 export async function openScript({ name }) {

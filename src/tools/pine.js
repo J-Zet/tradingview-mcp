@@ -40,10 +40,29 @@ export function registerPineTools(server) {
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 
-  server.tool('pine_new', 'Create a new blank Pine Script', {
+  server.tool('pine_new', 'Create a truly new blank Pine Script via the TV toolbar (does NOT overwrite existing script). Opens the "Create new" submenu and selects the type.', {
     type: z.enum(['indicator', 'strategy', 'library']).describe('Type of script to create'),
   }, async ({ type }) => {
     try { return jsonResult(await core.newScript({ type })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('pine_save_as', 'Make a copy of the current Pine Script with a new name (TV "Make a copy…" action)', {
+    name: z.string().optional().describe('New name for the copy (leave empty to use TV default)'),
+  }, async ({ name }) => {
+    try { return jsonResult(await core.saveAs({ name })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('pine_rename', 'Rename the current Pine Script (TV "Rename…" action)', {
+    name: z.string().describe('New name for the script'),
+  }, async ({ name }) => {
+    try { return jsonResult(await core.renameScript({ name })); }
+    catch (err) { return jsonResult({ success: false, error: err.message }, true); }
+  });
+
+  server.tool('pine_version_history', 'Open the version history panel for the current Pine Script', {}, async () => {
+    try { return jsonResult(await core.versionHistory()); }
     catch (err) { return jsonResult({ success: false, error: err.message }, true); }
   });
 

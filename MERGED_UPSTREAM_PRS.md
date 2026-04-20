@@ -13,4 +13,7 @@ The upstream-tracker workflow skips these when reporting new items.
 | #71 | Bump hono + @hono/node-server to patch CVEs | 2026-04-20 | npm audit fix, 0 vulns after |
 | #39 | fix: default screenshot region to 'full' when unspecified | 2026-04-20 | 1-line fix in capture.js |
 | #65 | feat: watchlist_remove, watchlist_add_bulk, fix Electron 38 click handling | 2026-04-20 | Ported; real MouseEvent dispatches replace .click() throughout watchlist |
+| #40 | fix: reconnect CDP client after tab switch | 2026-04-20 | Already applied locally via different approach — see below |
+| #35 | feat: add data_get_pine_shapes for plotshape/plotchar signals | 2026-04-20 | Ported as-is |
+| #43 | feat: add output_dir parameter to screenshot tools | 2026-04-20 | Ported; extracted resolveScreenshotDir to paths.js |
 | #60 | feat: add draw_position tool for Long/Short position drawings | 2026-04-20 | Ported; pricescale tick conversion, REST-free pure chartAPI approach |

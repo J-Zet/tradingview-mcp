@@ -609,90 +609,89 @@ export async function newScript({ type }) {
   return { success: true, type: type || 'indicator', action: 'new_script_created' };
 }
 
+// Get the currently open script's ID and source from pine-facade.
+// Returns { id, source } or throws.
+async function _currentScriptInfo() {
+  const result = await evaluateAsync(`
+    (function() {
+      var titleBtn = document.querySelector('[data-qa-id="pine-script-title-button"]');
+      var currentName = titleBtn ? (titleBtn.querySelector('h2') || titleBtn).textContent.trim() : null;
+      return fetch('https://pine-facade.tradingview.com/pine-facade/list/?filter=saved', { credentials: 'include' })
+        .then(function(r) { return r.json(); })
+        .then(function(scripts) {
+          if (!Array.isArray(scripts)) return { error: 'unexpected pine-facade response' };
+          var match = null;
+          var nameLower = (currentName || '').toLowerCase();
+          for (var i = 0; i < scripts.length; i++) {
+            var sn = (scripts[i].scriptName || '').toLowerCase();
+            var st = (scripts[i].scriptTitle || '').toLowerCase();
+            if (sn === nameLower || st === nameLower) { match = scripts[i]; break; }
+          }
+          if (!match) {
+            // fuzzy: current editor name may be truncated
+            for (var j = 0; j < scripts.length; j++) {
+              var sn2 = (scripts[j].scriptName || '').toLowerCase();
+              if (sn2.indexOf(nameLower) !== -1 || nameLower.indexOf(sn2) !== -1) { match = scripts[j]; break; }
+            }
+          }
+          if (!match) return { error: 'Could not find current script in pine-facade. Name: ' + currentName };
+          return { id: match.scriptIdPart, name: match.scriptName || match.scriptTitle, version: match.version };
+        })
+        .catch(function(e) { return { error: e.message }; });
+    })()
+  `);
+  if (result?.error) throw new Error(result.error);
+  return result;
+}
+
 export async function saveAs({ name }) {
   const editorReady = await ensurePineEditorOpen();
   if (!editorReady) throw new Error('Could not open Pine Editor.');
 
-  await _pineMenuAction('Make a copy…');
-  await new Promise(r => setTimeout(r, 500));
+  // Get current source from Monaco
+  const source = await evaluate(`
+    (function() { var m = ${FIND_MONACO}; return m ? m.editor.getValue() : null; })()
+  `);
+  if (!source) throw new Error('Could not read source from Monaco editor.');
 
-  if (name) {
-    const set = await evaluate(`
-      (function() {
-        var inputs = document.querySelectorAll('input[type="text"], input:not([type])');
-        for (var i = 0; i < inputs.length; i++) {
-          if (inputs[i].offsetParent !== null) {
-            var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-            nativeSet.call(inputs[i], ${JSON.stringify(name)});
-            inputs[i].dispatchEvent(new Event('input', { bubbles: true }));
-            return true;
-          }
-        }
-        return false;
-      })()
-    `);
-    if (set) {
-      await new Promise(r => setTimeout(r, 200));
-      const saved = await evaluate(`
-        (function() {
-          var btns = document.querySelectorAll('button');
-          for (var i = 0; i < btns.length; i++) {
-            var t = btns[i].textContent.trim();
-            var p = btns[i].closest('[role="dialog"], [class*="dialog"], [class*="modal"]');
-            if ((t === 'Save' || t === 'OK') && p && btns[i].offsetParent !== null) {
-              btns[i].click(); return true;
-            }
-          }
-          return false;
-        })()
-      `);
-      if (saved) await new Promise(r => setTimeout(r, 500));
-    }
-  }
+  const copyName = name || 'Copy';
+  const result = await evaluateAsync(`
+    (function() {
+      var fd = new FormData();
+      fd.append('source', ${JSON.stringify(source)});
+      return fetch('https://pine-facade.tradingview.com/pine-facade/save/new?name=' + encodeURIComponent(${JSON.stringify(copyName)}) + '&allow_overwrite=true', {
+        method: 'POST', credentials: 'include', body: fd,
+      })
+        .then(function(r) { return r.json().then(function(d) { return { status: r.status, data: d }; }); })
+        .catch(function(e) { return { error: e.message }; });
+    })()
+  `);
+  if (result?.error) throw new Error(result.error);
+  if (result?.status >= 400) throw new Error('pine-facade save/new failed: ' + JSON.stringify(result.data));
 
-  return { success: true, action: 'save_as', name: name || null };
+  return { success: true, action: 'save_as', name: copyName, script_id: result?.data?.scriptIdPart || null };
 }
 
 export async function renameScript({ name }) {
   const editorReady = await ensurePineEditorOpen();
   if (!editorReady) throw new Error('Could not open Pine Editor.');
 
-  await _pineMenuAction('Rename…');
-  await new Promise(r => setTimeout(r, 500));
+  const { id, name: oldName } = await _currentScriptInfo();
+  const encoded = encodeURIComponent(id);
 
-  const set = await evaluate(`
+  const result = await evaluateAsync(`
     (function() {
-      var inputs = document.querySelectorAll('input[type="text"], input:not([type])');
-      for (var i = 0; i < inputs.length; i++) {
-        if (inputs[i].offsetParent !== null) {
-          var nativeSet = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-          nativeSet.call(inputs[i], ${JSON.stringify(name)});
-          inputs[i].dispatchEvent(new Event('input', { bubbles: true }));
-          return true;
-        }
-      }
-      return false;
+      return fetch('https://pine-facade.tradingview.com/pine-facade/rename/' + ${JSON.stringify(encoded)} + '?name=' + encodeURIComponent(${JSON.stringify(name)}) + '&force=true', {
+        method: 'POST', credentials: 'include',
+      })
+        .then(function(r) { return { status: r.status, ok: r.ok }; })
+        .catch(function(e) { return { error: e.message }; });
     })()
   `);
-  if (!set) throw new Error('Rename dialog input not found.');
+  if (result?.error) throw new Error(result.error);
+  if (!result?.ok) throw new Error('pine-facade rename failed with status ' + result?.status);
 
-  await new Promise(r => setTimeout(r, 200));
-  const saved = await evaluate(`
-    (function() {
-      var btns = document.querySelectorAll('button');
-      for (var i = 0; i < btns.length; i++) {
-        var t = btns[i].textContent.trim();
-        var p = btns[i].closest('[role="dialog"], [class*="dialog"], [class*="modal"]');
-        if ((t === 'Save' || t === 'OK' || t === 'Rename') && p && btns[i].offsetParent !== null) {
-          btns[i].click(); return true;
-        }
-      }
-      return false;
-    })()
-  `);
-  if (saved) await new Promise(r => setTimeout(r, 500));
-
-  return { success: true, action: 'renamed', name };
+  return { success: true, action: 'renamed', old_name: oldName, name, script_id: id };
 }
 
 export async function versionHistory() {

@@ -99,7 +99,10 @@ export async function switchTab({ index }) {
   const target = tabs.tabs[idx];
 
   try {
-    await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/activate/${target.id}`);
+    // Use CDP Target.activateTarget to visually bring the tab to front in Electron
+    // (fetch /json/activate doesn't work reliably in Electron for visual switching)
+    const currentClient = await getClient();
+    await currentClient.Target.activateTarget({ targetId: target.id });
     await new Promise(r => setTimeout(r, 500));
     await connectToTarget(target.id);
 

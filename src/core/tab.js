@@ -21,21 +21,39 @@ async function _getWindowRendererTarget() {
 }
 
 /**
- * List all open chart tabs (CDP page targets).
+ * List all open chart tabs (CDP page targets), enriched with current symbol.
  */
 export async function list() {
   const resp = await fetch(`http://${CDP_HOST}:${CDP_PORT}/json/list`);
   const targets = await resp.json();
 
-  const tabs = targets
-    .filter(t => t.type === 'page' && /tradingview\.com\/chart/i.test(t.url))
-    .map((t, i) => ({
+  const chartTargets = targets.filter(t => t.type === 'page' && /tradingview\.com\/chart/i.test(t.url));
+
+  const tabs = await Promise.all(chartTargets.map(async (t, i) => {
+    let symbol = null;
+    try {
+      const c = await CDP({ host: CDP_HOST, port: CDP_PORT, target: t.id });
+      await c.Runtime.enable();
+      const r = await c.Runtime.evaluate({
+        expression: `(function() {
+          try { return window.TradingViewApi._activeChartWidgetWV.value()._chartWidget.model().mainSeries().symbolInfo().name; } catch(e) {}
+          return null;
+        })()`,
+        returnByValue: true,
+      });
+      symbol = r.result.value || null;
+      await c.close();
+    } catch (_) {}
+
+    return {
       index: i,
       id: t.id,
+      symbol,
       title: t.title.replace(/^Live stock.*charts on /, ''),
       url: t.url,
       chart_id: t.url.match(/\/chart\/([^/?]+)/)?.[1] || null,
-    }));
+    };
+  }));
 
   return { success: true, tab_count: tabs.length, tabs };
 }
@@ -112,16 +130,19 @@ export async function switchTab({ index }) {
 
   try {
     // Step 1: Click the tab in Electron's title-bar renderer (window/index.html).
-    // This is the ONLY reliable way to visually switch tabs — CDP Page.bringToFront
-    // and Target.activateTarget don't work in Electron's BrowserView-based tab model.
+    // Match by symbol name — DOM tab order doesn't reliably match CDP target order.
     const windowTarget = await _getWindowRendererTarget();
-    if (windowTarget) {
+    if (windowTarget && target.symbol) {
       const winClient = await CDP({ host: CDP_HOST, port: CDP_PORT, target: windowTarget.id });
       await winClient.Runtime.enable();
+      const sym = target.symbol.split(':').pop(); // bare ticker e.g. "ES1!" or "GC1!"
       await winClient.Runtime.evaluate({
         expression: `(function() {
           var tabs = Array.from(document.querySelectorAll('.tab'));
-          var t = tabs[${idx}];
+          var t = tabs.find(function(el) {
+            var title = el.querySelector('.tab-title');
+            return title && title.textContent.indexOf(${JSON.stringify(sym)}) !== -1;
+          });
           if (t) t.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
           return t ? true : false;
         })()`,

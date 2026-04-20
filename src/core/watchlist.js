@@ -152,6 +152,7 @@ export async function addBulk({ symbols }) {
   const c = await getClient();
 
   await _ensureWatchlistOpen();
+  await new Promise(r => setTimeout(r, 500));
 
   // Open the Add symbol dialog once
   const addClicked = await evaluate(`

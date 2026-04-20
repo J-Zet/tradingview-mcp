@@ -528,75 +528,72 @@ export async function smartCompile() {
 }
 
 // Click an item in the pine-script-title dropdown by its aria-label.
-// If the item has a submenu (aria-haspopup=menu), pass subLabel to click within it.
-// Split into multiple evaluate calls so menu items have time to render async.
+// Uses evaluateAsync + polling so React has time to render menu items after btn.click().
 async function _pineMenuAction(label, subLabel) {
-  // Step 1: Open the dropdown
-  const opened = await evaluate(`
-    (function() {
-      var btn = document.querySelector('[data-qa-id="pine-script-title-button"]');
-      if (!btn) return { error: 'title button not found' };
-      btn.click();
-      return { menuId: btn.getAttribute('aria-controls') };
-    })()
-  `);
-  if (opened?.error) throw new Error(opened.error);
-  await new Promise(r => setTimeout(r, 350));
-
-  // Step 2: Find and click the target item
-  const clickResult = await evaluate(`
+  const result = await evaluateAsync(`
     (function() {
       function mc(el) {
         ['mousedown','mouseup','click'].forEach(function(t) {
           el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window }));
         });
       }
+      function poll(fn, interval, timeout) {
+        return new Promise(function(resolve, reject) {
+          var elapsed = 0;
+          var t = setInterval(function() {
+            var r = fn();
+            if (r !== null) { clearInterval(t); resolve(r); return; }
+            elapsed += interval;
+            if (elapsed >= timeout) { clearInterval(t); reject(new Error('poll timeout')); }
+          }, interval);
+        });
+      }
+
       var btn = document.querySelector('[data-qa-id="pine-script-title-button"]');
-      var menuId = btn && btn.getAttribute('aria-controls');
-      var menu = menuId && document.getElementById(menuId);
-      if (!menu) return { error: 'dropdown menu not found' };
-      var items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
-      var label = ${JSON.stringify(label)};
-      var target = items.find(function(el) {
-        return el.getAttribute('aria-label') === label ||
-               (label === 'Create new' && el.getAttribute('aria-haspopup') === 'menu' && !el.getAttribute('aria-label'));
-      });
-      if (!target) return { error: 'menu item not found: ' + label, available: items.map(function(el){ return el.getAttribute('aria-label'); }) };
-      if (${subLabel ? 'true' : 'false'}) {
+      if (!btn) return Promise.resolve({ error: 'title button not found' });
+      btn.click();
+
+      var menuId = btn.getAttribute('aria-controls');
+      return poll(function() {
+        var menu = menuId && document.getElementById(menuId);
+        if (!menu || menu.querySelectorAll('[role="menuitem"]').length === 0) return null;
+        return menu;
+      }, 50, 2000).then(function(menu) {
+        var items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+        var label = ${JSON.stringify(label)};
+        var target = items.find(function(el) {
+          return el.getAttribute('aria-label') === label ||
+                 (label === 'Create new' && el.getAttribute('aria-haspopup') === 'menu' && !el.getAttribute('aria-label'));
+        });
+        if (!target) return { error: 'menu item not found: ' + label, available: items.map(function(el) { return el.getAttribute('aria-label'); }) };
+
+        if (!${JSON.stringify(subLabel || null)}) {
+          mc(target);
+          return { ok: true };
+        }
+
+        // Has submenu: hover to open it, then poll for sub-items
         target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
         target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
-        return { subId: target.getAttribute('aria-controls') };
-      }
-      mc(target);
-      return { ok: true };
-    })()
-  `);
-  if (clickResult?.error) throw new Error(clickResult.error);
-  if (!subLabel) return;
+        var subId = target.getAttribute('aria-controls');
 
-  // Step 3: Submenu — wait for it to render, then click
-  await new Promise(r => setTimeout(r, 300));
-  const subResult = await evaluate(`
-    (function() {
-      function mc(el) {
-        ['mousedown','mouseup','click'].forEach(function(t) {
-          el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window }));
+        return poll(function() {
+          var submenu = subId && document.getElementById(subId);
+          if (!submenu || submenu.querySelectorAll('[role="menuitem"]').length === 0) return null;
+          return submenu;
+        }, 50, 1000).then(function(submenu) {
+          var sub = ${JSON.stringify((subLabel || '').toLowerCase())};
+          var subTarget = Array.from(submenu.querySelectorAll('[role="menuitem"]')).find(function(el) {
+            return (el.getAttribute('aria-label') || '').toLowerCase() === sub;
+          });
+          if (!subTarget) return { error: 'submenu item not found: ' + sub };
+          mc(subTarget);
+          return { ok: true };
         });
-      }
-      var subId = ${JSON.stringify(clickResult.subId || '')};
-      var submenu = subId && document.getElementById(subId);
-      if (!submenu) return { error: 'submenu not found (id: ' + subId + ')' };
-      var subItems = Array.from(submenu.querySelectorAll('[role="menuitem"]'));
-      var sub = ${JSON.stringify(subLabel.toLowerCase())};
-      var target = subItems.find(function(el) {
-        return (el.getAttribute('aria-label') || '').toLowerCase() === sub;
-      });
-      if (!target) return { error: 'submenu item not found: ' + sub, available: subItems.map(function(el){ return el.getAttribute('aria-label'); }) };
-      mc(target);
-      return { ok: true };
+      }).catch(function(e) { return { error: e.message }; });
     })()
   `);
-  if (subResult?.error) throw new Error(subResult.error);
+  if (result?.error) throw new Error(result.error);
 }
 
 export async function newScript({ type }) {
